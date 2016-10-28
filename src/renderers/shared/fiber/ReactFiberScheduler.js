@@ -71,6 +71,9 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
     SynchronousPriority :
     LowPriority;
 
+  // True if there is scheduled sync work that hasn't been flushed.
+  let hasBatchedUpdates : boolean = false;
+
   // The next work in progress fiber that we're currently working on.
   let nextUnitOfWork : ?Fiber = null;
   let nextPriorityLevel : PriorityLevel = NoWork;
@@ -482,9 +485,10 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
     while (nextUnitOfWork &&
            nextPriorityLevel === SynchronousPriority) {
       nextUnitOfWork = performUnitOfWork(nextUnitOfWork, false);
-      // If there's no nextUnitOfWork, we don't need to search for more
-      // because it shouldn't be possible to schedule sync work without
-      // immediately performing it
+
+      if (!nextUnitOfWork && hasBatchedUpdates) {
+        nextUnitOfWork = findNextUnitOfWork();
+      }
     }
     if (nextUnitOfWork) {
       if (nextPriorityLevel > AnimationPriority) {
@@ -497,6 +501,17 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
 
   function performSynchronousWork() {
     performAndHandleErrors(performSynchronousWorkUnsafe);
+    hasBatchedUpdates = false;
+  }
+
+  function scheduleSynchronousWork(root : FiberRoot, batched : boolean) {
+    root.current.pendingWorkPriority = SynchronousPriority;
+    // Unless in batch mode, perform the work immediately. Otherwise, the work
+    // will be flushed at the end of the batch.
+    if (!batched) {
+      hasBatchedUpdates = true;
+      performSynchronousWork();
+    }
   }
 
   function performAndHandleErrors<A>(fn: (a: A) => void, a: A) {
@@ -594,8 +609,7 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
     }
 
     if (priorityLevel === SynchronousPriority) {
-      root.current.pendingWorkPriority = SynchronousPriority;
-      performSynchronousWork();
+      scheduleSynchronousWork(root, false);
     }
 
     if (priorityLevel === NoWork) {
@@ -616,13 +630,18 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
         defaultPriorityContext;
     }
 
-    // Don't bother bubbling the priority to the root if it is synchronous. Just
-    // perform it now.
+    let batched = false;
     if (priorityLevel === SynchronousPriority) {
-      fiber.pendingWorkPriority = SynchronousPriority;
-      nextUnitOfWork = fiber;
-      performSynchronousWork();
-      return;
+      if (useSyncScheduling) {
+        batched = true;
+      } else {
+        // Don't bother bubbling the priority to the root if it is synchronous. Just
+        // perform it now.
+        fiber.pendingWorkPriority = SynchronousPriority;
+        nextUnitOfWork = fiber;
+        performSynchronousWork();
+        return;
+      }
     }
 
     while (true) {
@@ -639,7 +658,11 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
       if (!fiber.return) {
         if (fiber.tag === HostContainer) {
           const root : FiberRoot = (fiber.stateNode : any);
-          scheduleWork(root, priorityLevel);
+          if (batched) {
+            scheduleSynchronousWork(root, true);
+          } else {
+            scheduleWork(root, priorityLevel);
+          }
           return;
         } else {
           throw new Error('Invalid root');
