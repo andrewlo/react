@@ -567,10 +567,9 @@ module.exports = function<T, P, I, TI, C>(config : HostConfig<T, P, I, TI, C>) {
 
       // We will process an update caused by each error boundary synchronously.
       affectedBoundaries.forEach(boundary => {
-        // FIXME: We only specify LowPriority here so that setState() calls from the error
-        // boundaries are respected. Instead we should set default priority level or something
-        // like this. Reconsider this piece when synchronous scheduling is in place.
-        const priority = LowPriority;
+        const priority = priorityContext !== null ?
+          priorityContext :
+          defaultPriorityContext;
         const root = scheduleErrorBoundaryWork(boundary, priority);
         // This should use findNextUnitOfWork() when synchronous scheduling is implemented.
         let fiber = cloneFiber(root.current, priority);
